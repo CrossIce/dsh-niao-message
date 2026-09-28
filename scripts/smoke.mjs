@@ -182,6 +182,9 @@ check('点击：-execute 含删除标记命令', log()[0].includes(`rm -f '${MAR
 check('图标：未配置时不传 -appIcon', !log()[0].includes('-appIcon'))
 const iconSet = await http('set-config', { config: { appIcon: '/tmp/custom.icns' } })
 check('图标：appIcon 可写入配置', iconSet.status === 200 && iconSet.data.value.config.appIcon === '/tmp/custom.icns')
+// 关键：必须真的落盘。只断言接口响应会漏掉 PERSIST_KEYS 漏白名单的坑
+// —— 内存里生效、文件里没有，重启即丢。
+check('图标：appIcon 已写入配置文件', JSON.parse(readFileSync(CONFIG_FILE, 'utf8')).appIcon === '/tmp/custom.icns')
 clearAll()
 await http('test')
 await waitFor(() => log().length === 1)
@@ -189,6 +192,7 @@ check('图标：配置后传 -appIcon 与路径',
   log().length === 1 && log()[0].includes('-appIcon') && log()[0].includes('/tmp/custom.icns'))
 const iconClear = await http('set-config', { config: { appIcon: '' } })
 check('图标：清空后恢复空值', iconClear.status === 200 && (iconClear.data.value.config.appIcon ?? '') === '')
+check('图标：清空后已从配置文件移除', (JSON.parse(readFileSync(CONFIG_FILE, 'utf8')).appIcon ?? '') === '')
 clearAll()
 await http('test')
 await waitFor(() => log().length === 1)
