@@ -96,10 +96,15 @@ const emit = (type, data) => listeners['session/event']({ id: 's1' }, { type, da
 /* ------------------------------------------------------------------ */
 
 function makeReq(method, payload, origin = 'http://127.0.0.1:3080') {
+  return makeRawReq(method, { origin, host: '127.0.0.1:3080' }, payload)
+}
+
+/** 构造请求时可完全自定义请求头，用于同源判定的边界用例。 */
+function makeRawReq(method, headers, payload) {
   const text = payload === undefined ? '' : JSON.stringify(payload)
   return {
     method,
-    headers: { origin, host: '127.0.0.1:3080' },
+    headers,
     [Symbol.asyncIterator]: async function* () {
       if (text) yield text
     },
@@ -261,6 +266,31 @@ check('test：实际发送通知', log().length === 1 && log()[0].includes('通�
 const crossRes = makeRes()
 await routeHandler(makeReq('POST', { action: 'get-config' }, 'https://evil.example'), crossRes)
 check('跨站 POST 被拒绝', crossRes.out.status === 403)
+
+/* 15b. 同源判定回归：桌面端转发形态必须放行，伪造与跨站必须拒绝 */
+async function originProbe(headers) {
+  const res = makeRes()
+  await routeHandler(makeRawReq('POST', headers, { action: 'get-config' }), res)
+  return res.out.status
+}
+const HOST = '127.0.0.1:3080'
+
+// 放行：桌面端 Electron 主进程转发形态（origin / sec-fetch-site 均被剥掉）
+check('桌面端转发（Origin+Sec-Fetch-Site 双缺失）放行', await originProbe({ host: HOST }) === 200)
+check('浏览器常规同源（Origin 匹配）放行', await originProbe({ host: HOST, origin: `http://${HOST}` }) === 200)
+check('浏览器常规同源（Origin+Sec-Fetch-Site 齐备）放行',
+  await originProbe({ host: HOST, origin: `http://${HOST}`, 'sec-fetch-site': 'same-origin' }) === 200)
+
+// 拒绝：真实攻击面
+check('跨站 Origin 拒绝', await originProbe({ host: HOST, origin: 'https://evil.example' }) === 403)
+check('跨站标记优先于匹配的 Origin',
+  await originProbe({ host: HOST, origin: `http://${HOST}`, 'sec-fetch-site': 'cross-site' }) === 403)
+check('跨站标记（Origin 缺失）拒绝', await originProbe({ host: HOST, 'sec-fetch-site': 'cross-site' }) === 403)
+check('伪称同站的非本机 Host 拒绝', await originProbe({ host: '10.0.0.5:3080', origin: 'http://127.0.0.1:3080' }) === 403)
+check('Origin: null 拒绝', await originProbe({ host: HOST, origin: 'null' }) === 403)
+check('畸形 Origin 拒绝', await originProbe({ host: HOST, origin: 'not a url' }) === 403)
+check('缺少 Host 头拒绝', await originProbe({ origin: `http://${HOST}` }) === 403)
+check('自定义协议 Origin 拒绝（与 Host 判定一致）', await originProbe({ host: HOST, origin: 'dsh-app://app' }) === 403)
 
 /* 16. 切回页面清空通知：dismiss-all → 按组移除本插件通知 + 清除未点击标记 */
 clearAll()
