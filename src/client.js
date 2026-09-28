@@ -3,7 +3,7 @@
  *
  * 在 DSH 设置弹窗左侧边注册「通知管理」设置页（settings.section）：
  *   - 「是否启用」总开关；
- *   - 「通知行为」：重复通知开关、点击横幅后打开的应用、通知图标；
+ *   - 「通知行为」：重复通知开关、点击横幅后打开的应用；
  *   - 「通知分组」：三大组（异常终止 / 需要你操作 / 正常完成），每组一个
  *     启用开关、提示音与标题/消息模板（{reason} {tool} 变量）。
  *
@@ -252,21 +252,6 @@ function ConfigPanel() {
       ),
       React.createElement('p', { className: 'nio-msg-scene-desc' },
         '点击通知横幅时激活的应用；选「不打开任何应用」时，点击横幅仅消失'),
-      React.createElement('label', { className: 'nio-msg-field' },
-        React.createElement('span', { className: 'nio-msg-field-label' }, '通知图标'),
-        React.createElement('input', {
-          className: 'nio-msg-input',
-          placeholder: '留空则使用默认图标',
-          value: config.appIcon || '',
-          onChange: (e) => { setConfig({ ...config, appIcon: e.target.value }); setSaved(false) },
-        }),
-      ),
-      React.createElement('p', { className: 'nio-msg-scene-desc' },
-        '自定义通知横幅左侧的图标，填写图片文件的绝对路径（.icns 或 .png 均可）。',
-        React.createElement('br'),
-        '例如：/Applications/DeepSeek Harness.app/Contents/Resources/icon.icns',
-        React.createElement('br'),
-        '留空则沿用默认的终端图标'),
     ),
 
     /* 三、通知分组（每组一个开关：开启后该组全部情况都通知） */
