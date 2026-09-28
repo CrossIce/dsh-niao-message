@@ -10,12 +10,21 @@
  * 所有配置通过同源 JSON 路由 /api/dsh-niao-message 读写（宿主端持久化到
  * ~/.dsh/dsh-niao-message.config.json）。面板提供「保存」与「测试通知」。
  *
- * 纯 React（React.createElement，无 JSX）+ fetch；不访问额外 ctx 服务。
+ * 纯 React（React.createElement，无 JSX）+ fetch；除 slots 外不访问其他 ctx 服务。
  *
  * @module dsh-niao-message/client
  */
 
 import React from 'react'
+
+/**
+ * 本插件运行所需的宿主服务（cordis fiber inject）。
+ *
+ * 必须声明 slots：未声明时 cordis 不会为本 fiber 等待该服务，apply() 里
+ * ctx.get('slots') 只会拿到 undefined，设置弹窗左侧边就不会出现「通知管理」。
+ * @type {string[]}
+ */
+export const inject = ['slots']
 
 /** 宿主路由（与 lib/index.js 的 ROUTE_PATH 对应）。 */
 const ROUTE = '/api/dsh-niao-message'
@@ -423,12 +432,24 @@ export function apply(ctx) {
     }
   }, 'dsh-niao-message: dismiss on visible')
 
-  const slots = ctx.get('slots')
-  if (!slots) return
-
   // 注册设置弹窗左侧边的「通知管理」设置页。
-  slots.inject('settings.section', () => slots.register(
-    { name: 'settings.section', id: 'dsh-niao-message', order: 35, label: () => '通知管理' },
-    () => React.createElement(ConfigPanel, null),
-  ))
+  //
+  // 正常路径下 inject 已保证 slots 就绪，registerSection() 首次调用即完成注册。
+  // 这里再挂一道 internal/service 兜底：若 slots 晚于本插件到达，slots.inject
+  // 声明的消费方尚未就绪，注册会失败；等 slots 真正可用时补一次。
+  let sectionRegistered = false
+  const registerSection = () => {
+    if (sectionRegistered) return
+    const slots = ctx.get('slots')
+    if (!slots) return
+    sectionRegistered = true
+    slots.inject('settings.section', () => slots.register(
+      { name: 'settings.section', id: 'dsh-niao-message', order: 35, label: () => '通知管理' },
+      () => React.createElement(ConfigPanel, null),
+    ))
+  }
+  registerSection()
+  ctx.on('internal/service', (name) => {
+    if (name === 'slots') registerSection()
+  })
 }
