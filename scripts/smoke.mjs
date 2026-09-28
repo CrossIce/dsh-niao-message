@@ -4,6 +4,7 @@
  *
  * 用 fake ctx（含假 webServer 路由）+ 指向「参数录制脚本」的假 tool，
  * 模拟 session/event 事件流与设置面板 HTTP 请求，验证：
+ *   - 自定义通知图标（appIcon → -appIcon 参数）
  *   - 三大通知组（abnormal / waiting / success）的触发与开关
  *   - 总开关 enabled
  *   - 节流、未点击去重、点击参数（open -a + 删标记）、批准宽限期
@@ -176,6 +177,22 @@ check('去重：标记文件已写入', existsSync(MARKER))
 /* 4. 点击参数：open -a + 删除标记命令 */
 check('点击：-execute 含 open -a DeepSeek Harness', log()[0].includes("open -a 'DeepSeek Harness'"))
 check('点击：-execute 含删除标记命令', log()[0].includes(`rm -f '${MARKER}'`))
+
+/* 4b. 自定义图标：未配置时不传 -appIcon，配置后按路径传入，清空后恢复 */
+check('图标：未配置时不传 -appIcon', !log()[0].includes('-appIcon'))
+const iconSet = await http('set-config', { config: { appIcon: '/tmp/custom.icns' } })
+check('图标：appIcon 可写入配置', iconSet.status === 200 && iconSet.data.value.config.appIcon === '/tmp/custom.icns')
+clearAll()
+await http('test')
+await waitFor(() => log().length === 1)
+check('图标：配置后传 -appIcon 与路径',
+  log().length === 1 && log()[0].includes('-appIcon') && log()[0].includes('/tmp/custom.icns'))
+const iconClear = await http('set-config', { config: { appIcon: '' } })
+check('图标：清空后恢复空值', iconClear.status === 200 && (iconClear.data.value.config.appIcon ?? '') === '')
+clearAll()
+await http('test')
+await waitFor(() => log().length === 1)
+check('图标：清空后确实不再传 -appIcon', !log()[0].includes('-appIcon'))
 
 /* 5. 整轮出错 → abnormal 组；清除标记后，整轮完成 → success 组 */
 clearAll()
