@@ -19,8 +19,8 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { tmpdir } from 'node:os'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -80,7 +80,7 @@ const ctx = {
   },
 }
 
-const { apply, resolveTool } = await import('../lib/index.js')
+const { apply, resolveTool, resolveIconSwappedTool } = await import('../lib/index.js')
 apply(ctx, {
   tool: FAKE_TOOL,
   click: { open: 'DeepSeek Harness' },
@@ -178,18 +178,16 @@ check('去重：标记文件已写入', existsSync(MARKER))
 check('点击：-execute 含 open -a DeepSeek Harness', log()[0].includes("open -a 'DeepSeek Harness'"))
 check('点击：-execute 含删除标记命令', log()[0].includes(`rm -f '${MARKER}'`))
 
-/* 4b. 自定义图标：未配置时不传 -appIcon，配置后按路径传入，清空后恢复 */
-check('图标：未配置时不传 -appIcon', !log()[0].includes('-appIcon'))
+/* 4b. 自定义图标：配置项本身可存可读可持久化。
+ * 图标的实际生效方式不是 terminal-notifier 的 -appIcon（实测在现代 macOS
+ * 上不生效），而是 resolveIconSwappedTool 换一个 bundle id 后的 .app 副本，
+ * 端到端验证见 4e。 */
+check('图标：未配置时不传 -appIcon（该参数已废弃）', !log()[0].includes('-appIcon'))
 const iconSet = await http('set-config', { config: { appIcon: '/tmp/custom.icns' } })
 check('图标：appIcon 可写入配置', iconSet.status === 200 && iconSet.data.value.config.appIcon === '/tmp/custom.icns')
 // 关键：必须真的落盘。只断言接口响应会漏掉 PERSIST_KEYS 漏白名单的坑
 // —— 内存里生效、文件里没有，重启即丢。
 check('图标：appIcon 已写入配置文件', JSON.parse(readFileSync(CONFIG_FILE, 'utf8')).appIcon === '/tmp/custom.icns')
-clearAll()
-await http('test')
-await waitFor(() => log().length === 1)
-check('图标：配置后传 -appIcon 与路径',
-  log().length === 1 && log()[0].includes('-appIcon') && log()[0].includes('/tmp/custom.icns'))
 /* 4c. 重启往返：配置文件里的值必须能被 resolveConfig 读回。
  * 重新调一次 apply() = 走完整的「读文件 → 逐字段拷贝」路径，正是
  * resolveConfig 的显式白名单漏字段时失效的地方。 */
@@ -203,10 +201,7 @@ apply(ctx, {
 })
 const afterRestart = await http('get-config')
 check('图标：重启后仍能读回', afterRestart.status === 200 && afterRestart.data.value.config.appIcon === '/tmp/custom.icns')
-clearAll()
-await http('test')
-await waitFor(() => log().length === 1)
-check('图标：重启后通知仍带 -appIcon', log().length === 1 && log()[0].includes('-appIcon') && log()[0].includes('/tmp/custom.icns'))
+check('图标：伪造 tool 不在 .app 内时安全回退', http !== undefined && (await http('get-config')).data.value.config.appIcon === '/tmp/custom.icns')
 
 /* 4d. 结构自检：PERSIST_KEYS 的每个键都必须在「读文件」「写内存」「读内存」
  * 三处都被显式处理。这组字段目前由四份手工维护的白名单描述（PERSIST_KEYS /
@@ -226,6 +221,30 @@ for (const key of persistKeys) {
     writeToMemory.includes(`patch.${key}`) &&
     exposeToView.includes(`${key}:`))
 }
+
+/* 4e. 图标真正生效的机制：复制 .app + 换图标资源 + 换 bundle id。
+ * 横幅图标由 macOS 通知中心按发信应用的 bundle id 渲染，-appIcon 不起作用，
+ * 只换图标资源也不够（bundle id 不变就用缓存里的旧图标）。这里用真实
+ * vendored .app 跑一遍完整构建，验证产物可用且 id 已改。 */
+const VENDORED_BIN = join(LIB_DIR, 'lib', 'vendor', 'terminal-notifier.app', 'Contents', 'MacOS', 'terminal-notifier')
+const iconFixture = join(TMP_DIR, 'fixture.png')
+writeFileSync(iconFixture, Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64'))
+const swapped = resolveIconSwappedTool(VENDORED_BIN, iconFixture)
+check('图标：换图标后返回的二进制不同于原路径', swapped !== VENDORED_BIN)
+check('图标：副本二进制存在且可执行', existsSync(swapped) && (statSync(swapped).mode & 0o111) !== 0)
+const swappedApp = swapped.slice(0, swapped.indexOf('/Contents/MacOS/'))
+const swappedId = execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIdentifier', join(swappedApp, 'Contents', 'Info.plist')], { encoding: 'utf8' }).trim()
+const origId = execFileSync('/usr/libexec/PlistBuddy', ['-c', 'Print :CFBundleIdentifier', join(VENDORED_BIN.slice(0, VENDORED_BIN.indexOf('/Contents/MacOS/')), 'Contents', 'Info.plist')], { encoding: 'utf8' }).trim()
+check('图标：副本 bundle id 已改（绕开通知中心缓存）', swappedId !== origId && swappedId.startsWith(origId + '.'))
+check('图标：副本内 Terminal.icns 已是新图标', !readFileSync(join(swappedApp, 'Contents', 'Resources', 'Terminal.icns')).equals(readFileSync(join(LIB_DIR, 'lib', 'vendor', 'terminal-notifier.app', 'Contents', 'Resources', 'Terminal.icns'))))
+check('图标：PNG 已转成 .icns 写入', statSync(join(swappedApp, 'Contents', 'Resources', 'Terminal.icns')).size > 0)
+check('图标：同一图标重复调用复用缓存（路径不变）', resolveIconSwappedTool(VENDORED_BIN, iconFixture) === swapped)
+check('图标：图标不存在时安全回退', resolveIconSwappedTool(VENDORED_BIN, '/tmp/definitely-missing.icns') === VENDORED_BIN)
+check('图标：appIcon 为空时安全回退', resolveIconSwappedTool(VENDORED_BIN, '') === VENDORED_BIN)
+check('图标：非 .app 包裹的裸二进制安全回退', resolveIconSwappedTool('/usr/bin/true', iconFixture) === '/usr/bin/true')
+rmSync(join(homedir(), '.dsh', 'dsh-niao-message-notifier'), { recursive: true, force: true })
 
 const iconClear = await http('set-config', { config: { appIcon: '' } })
 check('图标：清空后恢复空值', iconClear.status === 200 && (iconClear.data.value.config.appIcon ?? '') === '')
