@@ -190,6 +190,43 @@ await http('test')
 await waitFor(() => log().length === 1)
 check('图标：配置后传 -appIcon 与路径',
   log().length === 1 && log()[0].includes('-appIcon') && log()[0].includes('/tmp/custom.icns'))
+/* 4c. 重启往返：配置文件里的值必须能被 resolveConfig 读回。
+ * 重新调一次 apply() = 走完整的「读文件 → 逐字段拷贝」路径，正是
+ * resolveConfig 的显式白名单漏字段时失效的地方。 */
+apply(ctx, {
+  tool: FAKE_TOOL,
+  click: { open: 'DeepSeek Harness' },
+  pendingFile: MARKER,
+  configFile: CONFIG_FILE,
+  throttleMs: 100,
+  approvalGraceMs: 50,
+})
+const afterRestart = await http('get-config')
+check('图标：重启后仍能读回', afterRestart.status === 200 && afterRestart.data.value.config.appIcon === '/tmp/custom.icns')
+clearAll()
+await http('test')
+await waitFor(() => log().length === 1)
+check('图标：重启后通知仍带 -appIcon', log().length === 1 && log()[0].includes('-appIcon') && log()[0].includes('/tmp/custom.icns'))
+
+/* 4d. 结构自检：PERSIST_KEYS 的每个键都必须在「读文件」「写内存」「读内存」
+ * 三处都被显式处理。这组字段目前由四份手工维护的白名单描述（PERSIST_KEYS /
+ * resolveConfig / applyConfigPatch / publicConfig），加字段时漏掉任意一份，
+ * 都会变成「保存当场生效、重启后丢失」或「面板输入框永远空白」这种
+ * 只在重启后才暴露的问题——普通单测断言接口响应是抓不到的。 */
+const indexSource = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+const between = (from, to) => indexSource.slice(indexSource.indexOf(from), indexSource.indexOf(to))
+const persistKeys = JSON.parse(indexSource.match(/const PERSIST_KEYS = (\[[^\]]*\])/)[1].replaceAll("'", '"'))
+const readFromFile = between('function resolveConfig', 'cfg.tool = resolveTool')
+const writeToMemory = between('function applyConfigPatch', '处理设置面板请求')
+const exposeToView = between('function publicConfig', 'function applyConfigPatch')
+check('结构：PERSIST_KEYS 非空且可解析', persistKeys.length > 0)
+for (const key of persistKeys) {
+  check(`结构：${key} 在读/写/展示三处白名单齐备`,
+    readFromFile.includes(`file.${key}`) &&
+    writeToMemory.includes(`patch.${key}`) &&
+    exposeToView.includes(`${key}:`))
+}
+
 const iconClear = await http('set-config', { config: { appIcon: '' } })
 check('图标：清空后恢复空值', iconClear.status === 200 && (iconClear.data.value.config.appIcon ?? '') === '')
 check('图标：清空后已从配置文件移除', (JSON.parse(readFileSync(CONFIG_FILE, 'utf8')).appIcon ?? '') === '')
